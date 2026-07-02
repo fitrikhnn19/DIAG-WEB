@@ -1,0 +1,2472 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  onSnapshot, 
+  updateDoc, 
+  deleteDoc, 
+  getDocs 
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+
+// --- CONFIG & INITIALIZATION ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' 
+  ? JSON.parse(__firebase_config) 
+  : {
+      apiKey: "",
+      authDomain: "mock-project.firebaseapp.com",
+      projectId: "mock-project",
+      storageBucket: "mock-project.appspot.com",
+      messagingSenderId: "123456",
+      appId: "1:123456:web:123"
+    };
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'transformasi-geometri-xi';
+
+// --- GEMINI AI API FUNCTION ---
+const callGemini = async (prompt) => {
+  const apiKey = ""; // Disuntikkan secara otomatis oleh environment
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }],
+  };
+
+  let retries = 5;
+  let delay = 1000;
+
+  while (retries > 0) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json();
+      if (data.candidates && data.candidates[0].content.parts[0].text) {
+        return data.candidates[0].content.parts[0].text;
+      }
+      throw new Error("Struktur respons dari Gemini API tidak valid");
+    } catch (error) {
+      retries--;
+      if (retries === 0) throw error;
+      await new Promise(res => setTimeout(res, delay));
+      delay *= 2;
+    }
+  }
+};
+
+// --- INITIAL QUESTION BANK DATA ---
+const DEFAULT_QUESTIONS = [
+  {
+    id: "default_1",
+    topic: "Translasi (Pergeseran)",
+    instruction: "Titik $A(2, -3)$ ditranslasikan oleh $T = \\begin{pmatrix} -3 \\\\ 5 \\end{pmatrix}$. Tentukan koordinat bayangan titik $A'$.",
+    points: { original: [2, -3], matrix: [-3, 5], correctResult: [-1, 2] },
+    tier1: {
+      question: "Berapakah koordinat hasil bayangan $A'$?",
+      options: [
+        { key: "A", text: "$A'(-1, 2)$", isCorrect: true },
+        { key: "B", text: "$A'(5, -8)$", isCorrect: false },
+        { key: "C", text: "$A'(-1, -8)$", isCorrect: false },
+        { key: "D", text: "$A'(5, 2)$", isCorrect: false },
+        { key: "E", text: "$A'(-6, -15)$", isCorrect: false }
+      ]
+    },
+    tier2: {
+      question: "Pilihlah alasan matematis yang paling tepat untuk jawaban Anda di atas:",
+      options: [
+        { key: "A", text: "Bayangan translasi diperoleh dengan menjumlahkan koordinat asal dengan matriks translasi: $x' = x + a$ dan $y' = y + b$.", isCorrect: true },
+        { key: "B", text: "Translasi merupakan pergeseran, sehingga koordinat asal dikurangi dengan matriks translasi karena arah koordinat berbalik.", isCorrect: false },
+        { key: "C", text: "Koordinat bayangan diperoleh dengan mengalikan elemen koordinat asal dengan matriks translasi: $x' = a \\cdot x$ dan $y' = b \\cdot y$.", isCorrect: false },
+        { key: "D", text: "Bayangan ditentukan dengan menukar posisi absis dan ordinat lalu dikurangi dengan pergeseran matriks.", isCorrect: false },
+        { key: "E", text: "Translasi merupakan hasil perkalian matriks identitas berordo $2 \\times 2$ dengan koordinat asal.", isCorrect: false }
+      ]
+    }
+  },
+  {
+    id: "default_2",
+    topic: "Refleksi (Pencerminan)",
+    instruction: "Titik $B(-4, 1)$ direfleksikan terhadap garis $y = -x$. Tentukan koordinat bayangan $B'$.",
+    points: { original: [-4, 1], line: "y = -x", correctResult: [-1, 4] },
+    tier1: {
+      question: "Berapakah koordinat hasil bayangan $B'$?",
+      options: [
+        { key: "A", text: "$B'(-1, 4)$", isCorrect: true },
+        { key: "B", text: "$B'(1, -4)$", isCorrect: false },
+        { key: "C", text: "$B'(4, -1)$", isCorrect: false },
+        { key: "D", text: "$B'(-4, -1)$", isCorrect: false },
+        { key: "E", text: "$B'(1, 4)$", isCorrect: false }
+      ]
+    },
+    tier2: {
+      question: "Pilihlah alasan matematis yang paling tepat untuk jawaban Anda di atas:",
+      options: [
+        { key: "A", text: "Pencerminan terhadap garis $y = -x$ mentransformasikan koordinat $(x, y) \\rightarrow (-y, -x)$.", isCorrect: true },
+        { key: "B", text: "Pencerminan terhadap garis $y = -x$ hanya menukar posisi absis dan ordinat tanpa mengubah tanda: $(x, y) \\rightarrow (y, x)$.", isCorrect: false },
+        { key: "C", text: "Pencerminan terhadap garis diagonal selalu menghasilkan nilai koordinat kuadrat yang bernilai positif.", isCorrect: false },
+        { key: "D", text: "Refleksi terhadap garis $y = -x$ ekuivalen dengan rotasi $180^\\circ$ terhadap titik asal.", isCorrect: false },
+        { key: "E", text: "Matriks transformasi refleksi garis $y = -x$ adalah matriks identitas berdiagonal utama negatif.", isCorrect: false }
+      ]
+    }
+  },
+  {
+    id: "default_3",
+    topic: "Rotasi (Perputaran)",
+    instruction: "Titik $C(3, 2)$ dirotasikan sebesar $90^\\circ$ searah jarum jam (sudut $-90^\\circ$) dengan pusat $O(0, 0)$. Tentukan bayangan $C'$.",
+    points: { original: [3, 2], angle: -90, correctResult: [2, -3] },
+    tier1: {
+      question: "Berapakah koordinat hasil bayangan $C'$?",
+      options: [
+        { key: "A", text: "$C'(2, -3)$", isCorrect: true },
+        { key: "B", text: "$C'(-2, 3)$", isCorrect: false },
+        { key: "C", text: "$C'(-3, -2)$", isCorrect: false },
+        { key: "D", text: "$C'(3, -2)$", isCorrect: false },
+        { key: "E", text: "$C'(-2, -3)$", isCorrect: false }
+      ]
+    },
+    tier2: {
+      question: "Pilihlah alasan matematis yang paling tepat untuk jawaban Anda di atas:",
+      options: [
+        { key: "A", text: "Rotasi $-90^\\circ$ searah jarum jam memetakan koordinat $(x, y) \\rightarrow (y, -x)$ sesuai dengan matriks rotasi $\\begin{pmatrix} 0 & 1 \\\\ -1 & 0 \\end{pmatrix}$.", isCorrect: true },
+        { key: "B", text: "Rotasi searah jarum jam berarti sudutnya positif $+90^\\circ$ sehingga menghasilkan pemetaan $(-y, x)$.", isCorrect: false },
+        { key: "C", text: "Setiap rotasi geometris selalu membalik tanda absis asli dan mempertahankan tanda ordinat.", isCorrect: false },
+        { key: "D", text: "Rotasi $90^\\circ$ searah maupun berlawanan jarum jam menghasilkan titik bayangan yang sama pada sumbu simetri.", isCorrect: false },
+        { key: "E", text: "Nilai sinus dan kosinus untuk sudut negatif selalu bernilai positif di kuadran keempat.", isCorrect: false }
+      ]
+    }
+  },
+  {
+    id: "default_4",
+    topic: "Dilatasi (Perkalian Nilai)",
+    instruction: "Titik $D(-2, 4)$ didilatasikan terhadap titik pusat $P(1, 2)$ dengan faktor skala $k = 3$. Tentukan koordinat bayangan $D'$.",
+    points: { original: [-2, 4], center: [1, 2], scale: 3, correctResult: [-8, 8] },
+    tier1: {
+      question: "Berapakah koordinat hasil bayangan $D'$?",
+      options: [
+        { key: "A", text: "$D'(-8, 8)$", isCorrect: true },
+        { key: "B", text: "$D'(-6, 12)$", isCorrect: false },
+        { key: "C", text: "$D'(-5, 10)$", isCorrect: false },
+        { key: "D", text: "$D'(-9, 6)$", isCorrect: false },
+        { key: "E", text: "$D'(8, -8)$", isCorrect: false }
+      ]
+    },
+    tier2: {
+      question: "Pilihlah alasan matematis yang paling tepat untuk jawaban Anda di atas:",
+      options: [
+        { key: "A", text: "Dilatasi terhadap pusat $P(a, b)$ dengan skala $k$ dirumuskan dengan $x' = a + k(x - a)$ dan $y' = b + k(y - b)$.", isCorrect: true },
+        { key: "B", text: "Dilatasi cukup mengalikan langsung koordinat asal dengan faktor skala: $x' = k \\cdot x$ dan $y' = k \\cdot y$ tanpa mempedulikan titik pusat.", isCorrect: false },
+        { key: "C", text: "Koordinat titik pusat dijumlahkan terlebih dahulu dengan koordinat asal kemudian dikalikan dengan skala.", isCorrect: false },
+        { key: "D", text: "Dilatasi dengan skala positif selalu menghasilkan bayangan di kuadran positif tanpa memandang posisi awal titik.", isCorrect: false },
+        { key: "E", text: "Skala dilatasi berbanding terbalik dengan kuadrat jarak koordinat pusat ke titik asal.", isCorrect: false }
+      ]
+    }
+  }
+];
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [role, setRole] = useState('siswa'); 
+  const [loading, setLoading] = useState(true);
+
+  // Global Exam Config State (Synced via Firestore)
+  const [activeToken, setActiveToken] = useState("TRANSGEOM11");
+  const [isTokenActive, setIsTokenActive] = useState(true);
+  const [examDuration, setExamDuration] = useState(30); 
+
+  // Dynamic Questions from DB + Default Questions
+  const [questions, setQuestions] = useState(DEFAULT_QUESTIONS);
+
+  // Master Student Database (Loaded from Firestore)
+  const [allowedStudents, setAllowedStudents] = useState([]);
+
+  // Siswa State
+  const [username, setUsername] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [examToken, setExamToken] = useState(""); 
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [studentAnswers, setStudentAnswers] = useState({}); 
+  const [warningsCount, setWarningsCount] = useState(0);
+  const [isLocked, setIsLocked] = useState(false);
+  const [examSubmitted, setExamSubmitted] = useState(false);
+  const [studentStatus, setStudentStatus] = useState("idle"); 
+  const [studentClass, setStudentClass] = useState("");
+  const [startTime, setStartTime] = useState(null);
+  const [secondsLeft, setSecondsLeft] = useState(1800); 
+
+  // Guru State
+  const [teacherPassword, setTeacherPassword] = useState("");
+  const [isTeacherAuthenticated, setIsTeacherAuthenticated] = useState(false);
+  const [liveStudents, setLiveStudents] = useState([]);
+  const [selectedStudentForDetail, setSelectedStudentForDetail] = useState(null);
+  const [classFilter, setClassFilter] = useState("Semua");
+
+  // AI & Generation States
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiFeedbackText, setAiFeedbackText] = useState("");
+  const [isAiFeedbackLoading, setIsAiFeedbackLoading] = useState(false);
+
+  // Add Student to Database Form State
+  const [showAddStudentModal, setShowAddStudentModal] = useState(false);
+  const [newStudentName, setNewStudentName] = useState("");
+  const [newStudentUsername, setNewStudentUsername] = useState("");
+  const [newStudentClass, setNewStudentClass] = useState("XI-1");
+  
+  // Bulk Import State
+  const [bulkImportText, setBulkImportText] = useState("");
+  const [isBulkMode, setIsBulkMode] = useState(false);
+
+  // Add/Edit Question Form State for Guru Dashboard
+  const [showAddQuestionModal, setShowAddQuestionModal] = useState(false);
+  const [newQuestionTopic, setNewQuestionTopic] = useState("Translasi (Pergeseran)");
+  const [newQuestionInstruction, setNewQuestionInstruction] = useState("");
+  const [newQuestionT1Text, setNewQuestionT1Text] = useState("");
+  const [newQuestionT1OptA, setNewQuestionT1OptA] = useState("");
+  const [newQuestionT1OptB, setNewQuestionT1OptB] = useState("");
+  const [newQuestionT1OptC, setNewQuestionT1OptC] = useState("");
+  const [newQuestionT1OptD, setNewQuestionT1OptD] = useState("");
+  const [newQuestionT1OptE, setNewQuestionT1OptE] = useState("");
+  const [newQuestionT1CorrectOpt, setNewQuestionT1CorrectOpt] = useState("A");
+
+  const [newQuestionT2Text, setNewQuestionT2Text] = useState("");
+  const [newQuestionT2OptA, setNewQuestionT2OptA] = useState("");
+  const [newQuestionT2OptB, setNewQuestionT2OptB] = useState("");
+  const [newQuestionT2OptC, setNewQuestionT2OptC] = useState("");
+  const [newQuestionT2OptD, setNewQuestionT2OptD] = useState("");
+  const [newQuestionT2OptE, setNewQuestionT2OptE] = useState("");
+  const [newQuestionT2CorrectOpt, setNewQuestionT2CorrectOpt] = useState("A");
+
+  // Custom Confirmation Modals & Toast State
+  const [toastMessage, setToastMessage] = useState(null);
+  const [showExitWarning, setShowExitWarning] = useState(false);
+  const [showResetWarning, setShowResetWarning] = useState(false);
+
+  // Dynamic Katex Rendering Effect
+  useEffect(() => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css";
+    document.head.appendChild(link);
+
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js";
+    script.async = true;
+    script.onload = () => {
+      renderAllMath();
+    };
+    document.head.appendChild(script);
+
+    return () => {
+      if (document.head.contains(link)) document.head.removeChild(link);
+      if (document.head.contains(script)) document.head.removeChild(script);
+    };
+  }, []);
+
+  // Rerender math formulas whenever screen or state changes
+  useEffect(() => {
+    renderAllMath();
+  }, [role, currentQuestionIndex, examSubmitted, isTeacherAuthenticated, studentStatus, questions, newQuestionInstruction]);
+
+  const renderAllMath = () => {
+    if (window.katex) {
+      const elements = document.querySelectorAll('.math-render');
+      elements.forEach(el => {
+        try {
+          const rawText = el.getAttribute('data-math') || el.innerText;
+          window.katex.render(rawText, el, {
+            throwOnError: false,
+            displayMode: el.classList.contains('math-block')
+          });
+        } catch (err) {
+          console.error("Math rendering error:", err);
+        }
+      });
+    }
+  };
+
+  // --- FIREBASE AUTHENTICATION & SYNC (RULE 3) ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Firebase auth initialization error:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (usr) => {
+      if (usr) {
+        setUser(usr);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- REAL-TIME EXAM CONFIGURATION LISTENER ---
+  useEffect(() => {
+    if (!user) return;
+    const configDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'exam_settings', 'config');
+    const unsubscribe = onSnapshot(configDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.token) {
+          setActiveToken(data.token);
+          setExamToken(data.token);
+        }
+        if (data.isTokenActive !== undefined) setIsTokenActive(data.isTokenActive);
+        if (data.examDuration !== undefined) setExamDuration(data.examDuration);
+      } else {
+        setDoc(configDocRef, {
+          token: "TRANSGEOM11",
+          isTokenActive: true,
+          examDuration: 30
+        });
+      }
+    }, (error) => {
+      console.error("Error loading config:", error);
+    });
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- REAL-TIME QUESTION BANK LISTENER ---
+  useEffect(() => {
+    if (!user) return;
+    const questionsColRef = collection(db, 'artifacts', appId, 'public', 'data', 'exam_questions');
+    const unsubscribe = onSnapshot(questionsColRef, (snapshot) => {
+      const list = [];
+      snapshot.forEach((doc) => {
+        list.push({ id: doc.id, ...doc.data() });
+      });
+      if (list.length > 0) {
+        setQuestions([...DEFAULT_QUESTIONS, ...list]);
+      } else {
+        setQuestions(DEFAULT_QUESTIONS);
+      }
+    }, (error) => {
+      console.error("Error loading custom questions:", error);
+    });
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- REAL-TIME STUDENT DATABASE LISTENER ---
+  useEffect(() => {
+    if (!user) return;
+    const studentDbColRef = collection(db, 'artifacts', appId, 'public', 'data', 'student_database');
+    const unsubscribe = onSnapshot(studentDbColRef, (snapshot) => {
+      const list = [];
+      snapshot.forEach((doc) => {
+        list.push({ usernameId: doc.id, ...doc.data() });
+      });
+      setAllowedStudents(list);
+    }, (error) => {
+      console.error("Error loading student database:", error);
+    });
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- REAL-TIME LIVE MONITOR FOR GURU ---
+  useEffect(() => {
+    if (!user || !isTeacherAuthenticated) return;
+
+    const sessionsCol = collection(db, 'artifacts', appId, 'public', 'data', 'student_sessions');
+    const unsubscribe = onSnapshot(sessionsCol, (snapshot) => {
+      const studentsList = [];
+      snapshot.forEach((doc) => {
+        studentsList.push({ id: doc.id, ...doc.data() });
+      });
+      setLiveStudents(studentsList);
+    }, (error) => {
+      console.error("Error listening to student sessions:", error);
+    });
+
+    return () => unsubscribe();
+  }, [user, isTeacherAuthenticated]);
+
+  // --- ANTI-CHEAT & TAB DETECTION FOR SISWA ---
+  useEffect(() => {
+    if (role !== 'siswa' || studentStatus !== 'testing' || isLocked) return;
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        triggerTabSwitchWarning();
+      }
+    };
+
+    const handleWindowBlur = () => {
+      triggerTabSwitchWarning();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("blur", handleWindowBlur);
+
+    const handleContextMenu = (e) => e.preventDefault();
+    document.addEventListener("contextmenu", handleContextMenu);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("blur", handleWindowBlur);
+      document.removeEventListener("contextmenu", handleContextMenu);
+    };
+  }, [role, studentStatus, warningsCount, isLocked]);
+
+  const triggerTabSwitchWarning = () => {
+    setWarningsCount((prev) => {
+      const nextCount = prev + 1;
+      showToast(`Peringatan Keamanan! Jangan beralih ke halaman lain (${nextCount}/3)`);
+      
+      updateStudentSessionInDB({ warnings: nextCount });
+
+      if (nextCount >= 3) {
+        setIsLocked(true);
+        setStudentStatus("locked");
+        updateStudentSessionInDB({ status: "terkunci", isLocked: true });
+      }
+      return nextCount;
+    });
+  };
+
+  // --- STUDENT SESSION TIMER LOGIC ---
+  useEffect(() => {
+    if (studentStatus !== 'testing' || !startTime) return;
+
+    const interval = setInterval(() => {
+      const startMs = new Date(startTime).getTime();
+      const currentMs = new Date().getTime();
+      const elapsedSeconds = Math.floor((currentMs - startMs) / 1000);
+      const limitSeconds = examDuration * 60;
+      const remaining = limitSeconds - elapsedSeconds;
+
+      if (remaining <= 0) {
+        setSecondsLeft(0);
+        clearInterval(interval);
+        handleAutoSubmit();
+      } else {
+        setSecondsLeft(remaining);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [studentStatus, startTime, examDuration]);
+
+  const handleAutoSubmit = async () => {
+    showToast("Waktu Ujian Habis! Menyimpan lembar jawaban secara otomatis...");
+    
+    const evaluatedResults = questions.map(q => {
+      const ans = studentAnswers[q.id] || { t1: null, t2: null, t3: null };
+      const correctT1 = q.tier1.options.find(o => o.isCorrect)?.key;
+      const correctT2 = q.tier2.options.find(o => o.isCorrect)?.key;
+
+      const isT1Correct = ans.t1 === correctT1;
+      const isT2Correct = ans.t2 === correctT2;
+      const isConfident = ans.t3 === 'yakin';
+
+      const diagnosticCategory = evaluateThreeTier(isT1Correct, isT2Correct, isConfident);
+      
+      return {
+        questionId: q.id,
+        topic: q.topic,
+        ansT1: ans.t1,
+        ansT2: ans.t2,
+        isConfident,
+        isT1Correct,
+        isT2Correct,
+        diagnosticCategory
+      };
+    });
+
+    try {
+      await updateStudentSessionInDB({
+        status: "selesai",
+        answers: studentAnswers,
+        evaluatedResults,
+        submittedAt: new Date().toISOString()
+      });
+      setExamSubmitted(true);
+      setStudentStatus("finished");
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Listen to remote changes on student session to handle Guru Unlock Action
+  useEffect(() => {
+    if (role !== 'siswa' || !username) return;
+
+    const sessionDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'student_sessions', username.toLowerCase());
+    const unsubscribe = onSnapshot(sessionDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.status === 'aktif' && isLocked) {
+          setIsLocked(false);
+          setStudentStatus("testing");
+          setWarningsCount(0);
+          showToast("Akses ujian Anda telah diaktifkan kembali oleh Guru.");
+        }
+      }
+    }, (err) => {
+      console.error("Eror monitoring sesi kunci siswa: ", err);
+    });
+
+    return () => unsubscribe();
+  }, [role, username, isLocked]);
+
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  // --- STUDENT DATABASE ACTIONS ---
+  const updateStudentSessionInDB = async (payload) => {
+    if (!username) return;
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'student_sessions', username.toLowerCase());
+      await setDoc(docRef, {
+        username: username.toLowerCase(),
+        fullName,
+        class: studentClass,
+        token: examToken,
+        lastActive: new Date().toISOString(),
+        ...payload
+      }, { merge: true });
+    } catch (err) {
+      console.error("Gagal mengupdate database:", err);
+    }
+  };
+
+  const handleStudentLogin = async (e) => {
+    e.preventDefault();
+    if (!username || !fullName) {
+      showToast("Harap isi seluruh kolom dengan benar.");
+      return;
+    }
+
+    if (examToken.toUpperCase() !== activeToken) {
+      showToast("Token ujian salah atau tidak aktif!");
+      return;
+    }
+
+    // --- ENFORCING MULTI-CLASS STUDENT MASTER DATABASE CHECK ---
+    const normalizedUsername = username.trim().toLowerCase();
+    const allowedRecord = allowedStudents.find(s => s.usernameId === normalizedUsername);
+
+    if (!allowedRecord) {
+      showToast("Login Ditolak: NISN/Username Anda tidak terdaftar di database kelas mana pun!");
+      return;
+    }
+
+    const matchedClass = allowedRecord.class;
+    const registeredName = allowedRecord.fullName;
+
+    setStudentClass(matchedClass);
+    setFullName(registeredName);
+
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'student_sessions', normalizedUsername);
+      const docSnap = await getDoc(docRef);
+
+      if (docSnap.exists()) {
+        const recoveredData = docSnap.data();
+        if (recoveredData.status === 'terkunci') {
+          setIsLocked(true);
+          setStudentStatus("locked");
+          setWarningsCount(recoveredData.warnings || 3);
+          showToast("Sesi Anda terkunci karena pelanggaran tab switch.");
+        } else if (recoveredData.status === 'selesai') {
+          setExamSubmitted(true);
+          setStudentStatus("finished");
+          showToast("Ujian Anda telah selesai dikirim.");
+        } else {
+          setStudentAnswers(recoveredData.answers || {});
+          setCurrentQuestionIndex(recoveredData.currentQuestionIndex || 0);
+          setWarningsCount(recoveredData.warnings || 0);
+          setStartTime(recoveredData.startTime || new Date().toISOString());
+          setStudentStatus("testing");
+          showToast(`Sesi dipulihkan. Selamat pengerjaan kembali, Kelas ${matchedClass}!`);
+        }
+      } else {
+        const initialAnswers = {};
+        questions.forEach(q => {
+          initialAnswers[q.id] = { t1: null, t2: null, t3: null };
+        });
+        const nowStr = new Date().toISOString();
+        setStudentAnswers(initialAnswers);
+        setStartTime(nowStr);
+        setStudentStatus("testing");
+        await setDoc(docRef, {
+          username: normalizedUsername,
+          fullName: registeredName,
+          class: matchedClass,
+          token: examToken,
+          status: "aktif",
+          currentQuestionIndex: 0,
+          answers: initialAnswers,
+          warnings: 0,
+          isLocked: false,
+          startTime: nowStr,
+          lastActive: nowStr
+        });
+        showToast(`Selamat datang ${registeredName} (Kelas ${matchedClass}). Sesi ujian dimulai!`);
+      }
+    } catch (err) {
+      console.error(err);
+      showToast("Error masuk ke dalam ujian.");
+    }
+  };
+
+  const handleStudentAnswerSelect = (tier, val) => {
+    const qId = questions[currentQuestionIndex].id;
+    const updatedAnswers = {
+      ...studentAnswers,
+      [qId]: {
+        ...studentAnswers[qId],
+        [tier]: val
+      }
+    };
+    setStudentAnswers(updatedAnswers);
+    updateStudentSessionInDB({ answers: updatedAnswers });
+  };
+
+  const handleNextQuestion = () => {
+    const qId = questions[currentQuestionIndex].id;
+    const ans = studentAnswers[qId];
+    if (!ans || ans.t1 === null || ans.t2 === null || ans.t3 === null) {
+      showToast("Selesaikan semua Tier (Tier 1, 2, dan 3) sebelum lanjut!");
+      return;
+    }
+
+    if (currentQuestionIndex < questions.length - 1) {
+      const nextIndex = currentQuestionIndex + 1;
+      setCurrentQuestionIndex(nextIndex);
+      updateStudentSessionInDB({ currentQuestionIndex: nextIndex });
+    }
+  };
+
+  const handlePrevQuestion = () => {
+    if (currentQuestionIndex > 0) {
+      const prevIndex = currentQuestionIndex - 1;
+      setCurrentQuestionIndex(prevIndex);
+      updateStudentSessionInDB({ currentQuestionIndex: prevIndex });
+    }
+  };
+
+  const handleStudentSubmit = async () => {
+    const incomplete = questions.some(q => {
+      const ans = studentAnswers[q.id];
+      return !ans || ans.t1 === null || ans.t2 === null || ans.t3 === null;
+    });
+
+    if (incomplete) {
+      showToast("Terdapat soal yang belum selesai dikerjakan!");
+      return;
+    }
+
+    const evaluatedResults = questions.map(q => {
+      const ans = studentAnswers[q.id];
+      const correctT1 = q.tier1.options.find(o => o.isCorrect)?.key;
+      const correctT2 = q.tier2.options.find(o => o.isCorrect)?.key;
+
+      const isT1Correct = ans.t1 === correctT1;
+      const isT2Correct = ans.t2 === correctT2;
+      const isConfident = ans.t3 === 'yakin';
+
+      const diagnosticCategory = evaluateThreeTier(isT1Correct, isT2Correct, isConfident);
+      
+      return {
+        questionId: q.id,
+        topic: q.topic,
+        ansT1: ans.t1,
+        ansT2: ans.t2,
+        isConfident,
+        isT1Correct,
+        isT2Correct,
+        diagnosticCategory
+      };
+    });
+
+    try {
+      await updateStudentSessionInDB({
+        status: "selesai",
+        answers: studentAnswers,
+        evaluatedResults,
+        submittedAt: new Date().toISOString()
+      });
+      setExamSubmitted(true);
+      setStudentStatus("finished");
+      showToast("Jawaban ujian berhasil terkirim!");
+    } catch (err) {
+      console.error(err);
+      showToast("Gagal mengirim lembar jawaban.");
+    }
+  };
+
+  // --- GURU / TEACHER ACTIONS ---
+  const handleTeacherLogin = (e) => {
+    e.preventDefault();
+    if (teacherPassword === "guru123" || teacherPassword === "admin123") {
+      setIsTeacherAuthenticated(true);
+      showToast("Autentikasi Guru berhasil!");
+    } else {
+      showToast("Password Guru salah! Gunakan: guru123");
+    }
+  };
+
+  const handleUpdateGlobalSettings = async () => {
+    try {
+      const configDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'exam_settings', 'config');
+      await setDoc(configDocRef, {
+        token: activeToken.toUpperCase(),
+        isTokenActive,
+        examDuration: parseInt(examDuration) || 30
+      });
+      showToast("Pengaturan global berhasil diperbarui!");
+    } catch (err) {
+      console.error(err);
+      showToast("Gagal memperbarui pengaturan terpusat.");
+    }
+  };
+
+  // --- INDIVIDUAL / BULK STUDENT REGISTRATION ---
+  const handleRegisterStudents = async (e) => {
+    e.preventDefault();
+    try {
+      if (isBulkMode) {
+        if (!bulkImportText.trim()) {
+          showToast("Data impor teks massal masih kosong.");
+          return;
+        }
+
+        const lines = bulkImportText.split('\n');
+        let successCount = 0;
+
+        for (let line of lines) {
+          if (!line.trim()) continue;
+          const parts = line.split(',');
+          if (parts.length >= 3) {
+            const nisn = parts[0].trim().toLowerCase();
+            const nama = parts[1].trim();
+            const kelas = parts[2].trim();
+
+            if (nisn && nama && kelas) {
+              const studentRef = doc(db, 'artifacts', appId, 'public', 'data', 'student_database', nisn);
+              await setDoc(studentRef, {
+                fullName: nama,
+                class: kelas,
+                createdAt: new Date().toISOString()
+              });
+              successCount++;
+            }
+          }
+        }
+        showToast(`Berhasil mendaftarkan ${successCount} siswa secara massal!`);
+        setBulkImportText("");
+      } else {
+        if (!newStudentName || !newStudentUsername) {
+          showToast("Silakan isi semua kolom pendaftaran.");
+          return;
+        }
+
+        const normalizedNisn = newStudentUsername.trim().toLowerCase();
+        const studentRef = doc(db, 'artifacts', appId, 'public', 'data', 'student_database', normalizedNisn);
+        
+        await setDoc(studentRef, {
+          fullName: newStudentName.trim(),
+          class: newStudentClass,
+          createdAt: new Date().toISOString()
+        });
+
+        showToast(`Siswa "${newStudentName}" terdaftar di kelas ${newStudentClass}!`);
+        setNewStudentName("");
+        setNewStudentUsername("");
+      }
+      setShowAddStudentModal(false);
+    } catch (err) {
+      console.error(err);
+      showToast("Gagal menyimpan database siswa.");
+    }
+  };
+
+  const handleDeleteAllowedStudent = async (nisnId) => {
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'student_database', nisnId);
+      await deleteDoc(docRef);
+      showToast(`Siswa ${nisnId.toUpperCase()} telah dihapus dari database.`);
+    } catch (err) {
+      console.error(err);
+      showToast("Gagal menghapus siswa dari database.");
+    }
+  };
+
+  // --- AI GENERATE QUESTION FEATURE ---
+  const handleAIGenerateQuestion = async () => {
+    setIsAiLoading(true);
+    const prompt = `Anda adalah guru Matematika SMA kelas XI. Buatkan 1 draf soal evaluasi diagnostik Three-Tier Multiple Choice materi Transformasi Geometri tentang topik "${newQuestionTopic}".
+Berikan balasan Anda HANYA dalam format JSON valid (tanpa blok \`\`\`json) dengan struktur yang sama persis seperti ini:
+{
+  "instruction": "Tulis narasi soal disini. Gunakan format LaTeX $...$ untuk koordinat/matriks. Contoh: Titik $A(1,2)$ ditranslasikan...",
+  "t1Text": "Tulis pertanyaan opsi ganda untuk mencari hasil akhir di sini.",
+  "t1A": "Tulis jawaban A lengkap", "t1B": "Tulis jawaban B lengkap", "t1C": "Tulis jawaban C lengkap", "t1D": "Tulis jawaban D lengkap", "t1E": "Tulis jawaban E lengkap", "t1Ans": "A/B/C/D/E",
+  "t2Text": "Tulis pertanyaan mengenai alasan teoritis di sini.",
+  "t2A": "Tulis justifikasi/alasan A", "t2B": "Tulis justifikasi/alasan B", "t2C": "Tulis justifikasi/alasan C", "t2D": "Tulis justifikasi/alasan D", "t2E": "Tulis justifikasi/alasan E", "t2Ans": "A/B/C/D/E"
+}`;
+
+    try {
+      const aiResponse = await callGemini(prompt);
+      const cleanResponse = aiResponse.replace(/```json/g, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(cleanResponse);
+      
+      setNewQuestionInstruction(parsed.instruction || "");
+      setNewQuestionT1Text(parsed.t1Text || "");
+      setNewQuestionT1OptA(parsed.t1A || "");
+      setNewQuestionT1OptB(parsed.t1B || "");
+      setNewQuestionT1OptC(parsed.t1C || "");
+      setNewQuestionT1OptD(parsed.t1D || "");
+      setNewQuestionT1OptE(parsed.t1E || "");
+      setNewQuestionT1CorrectOpt(parsed.t1Ans || "A");
+
+      setNewQuestionT2Text(parsed.t2Text || "");
+      setNewQuestionT2OptA(parsed.t2A || "");
+      setNewQuestionT2OptB(parsed.t2B || "");
+      setNewQuestionT2OptC(parsed.t2C || "");
+      setNewQuestionT2OptD(parsed.t2D || "");
+      setNewQuestionT2OptE(parsed.t2E || "");
+      setNewQuestionT2CorrectOpt(parsed.t2Ans || "A");
+      
+      showToast("Berhasil menghasilkan draf soal dengan AI!");
+    } catch (error) {
+      console.error(error);
+      showToast("Gagal menghasilkan draf dari AI, silakan coba lagi.");
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
+  // --- AI FEEDBACK FOR STUDENT (GURU DASHBOARD) ---
+  const handleAIGenerateFeedback = async () => {
+    if (!selectedStudentForDetail || !selectedStudentForDetail.evaluatedResults) return;
+    setIsAiFeedbackLoading(true);
+    setAiFeedbackText("");
+
+    const dataTeks = JSON.stringify(selectedStudentForDetail.evaluatedResults.map(r => ({
+      Topik: r.topic, Klasifikasi: r.diagnosticCategory
+    })));
+
+    const prompt = `Anda adalah asisten Guru Matematika. Analisis hasil diagnostik evaluasi Three-Tier Transformasi Geometri siswa bernama ${selectedStudentForDetail.fullName} (Kelas ${selectedStudentForDetail.class}).
+Berikut riwayatnya: ${dataTeks}
+Berikan 2 paragraf padat. Paragraf pertama tentang kesimpulan tingkat pemahaman kognitif siswa ini. Paragraf kedua berikan saran tindakan remedial / strategi pedagogis spesifik untuk mengatasi miskonsepsi yang dia alami. Tulis dengan gaya bahasa yang profesional dan membangun.`;
+
+    try {
+      const responseText = await callGemini(prompt);
+      setAiFeedbackText(responseText);
+    } catch (error) {
+      showToast("Gagal menganalisis siswa dengan AI.");
+    } finally {
+      setIsAiFeedbackLoading(false);
+    }
+  };
+
+  const handleCreateNewQuestion = async (e) => {
+    e.preventDefault();
+    if (!newQuestionInstruction || !newQuestionT1Text || !newQuestionT2Text) {
+      showToast("Semua teks soal wajib diisi!");
+      return;
+    }
+
+    const questionId = "custom_" + Date.now();
+    const newQuestionObj = {
+      id: questionId,
+      topic: newQuestionTopic,
+      instruction: newQuestionInstruction,
+      points: { original: [0, 0], correctResult: [0, 0] },
+      tier1: {
+        question: newQuestionT1Text,
+        options: [
+          { key: "A", text: newQuestionT1OptA || "A", isCorrect: newQuestionT1CorrectOpt === "A" },
+          { key: "B", text: newQuestionT1OptB || "B", isCorrect: newQuestionT1CorrectOpt === "B" },
+          { key: "C", text: newQuestionT1OptC || "C", isCorrect: newQuestionT1CorrectOpt === "C" },
+          { key: "D", text: newQuestionT1OptD || "D", isCorrect: newQuestionT1CorrectOpt === "D" },
+          { key: "E", text: newQuestionT1OptE || "E", isCorrect: newQuestionT1CorrectOpt === "E" }
+        ]
+      },
+      tier2: {
+        question: newQuestionT2Text,
+        options: [
+          { key: "A", text: newQuestionT2OptA || "Alasan A", isCorrect: newQuestionT2CorrectOpt === "A" },
+          { key: "B", text: newQuestionT2OptB || "Alasan B", isCorrect: newQuestionT2CorrectOpt === "B" },
+          { key: "C", text: newQuestionT2OptC || "Alasan C", isCorrect: newQuestionT2CorrectOpt === "C" },
+          { key: "D", text: newQuestionT2OptD || "Alasan D", isCorrect: newQuestionT2CorrectOpt === "D" },
+          { key: "E", text: newQuestionT2OptE || "Alasan E", isCorrect: newQuestionT2CorrectOpt === "E" }
+        ]
+      }
+    };
+
+    try {
+      const customDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'exam_questions', questionId);
+      await setDoc(customDocRef, newQuestionObj);
+      showToast("Soal diagnostik baru berhasil didaftarkan ke Bank Soal!");
+      setShowAddQuestionModal(false);
+      
+      // Reset State Form
+      setNewQuestionInstruction("");
+      setNewQuestionT1Text("");
+      setNewQuestionT2Text("");
+      setNewQuestionT1OptA("");setNewQuestionT1OptB("");setNewQuestionT1OptC("");setNewQuestionT1OptD("");setNewQuestionT1OptE("");
+      setNewQuestionT2OptA("");setNewQuestionT2OptB("");setNewQuestionT2OptC("");setNewQuestionT2OptD("");setNewQuestionT2OptE("");
+    } catch (err) {
+      console.error(err);
+      showToast("Gagal mendaftarkan soal kustom.");
+    }
+  };
+
+  const handleDeleteQuestion = async (qId) => {
+    if (qId.startsWith("default_")) {
+      showToast("Soal bawaan sistem (default) tidak dapat dihapus.");
+      return;
+    }
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'exam_questions', qId);
+      await deleteDoc(docRef);
+      showToast("Soal berhasil dihapus dari Bank Soal.");
+    } catch (err) {
+      console.error(err);
+      showToast("Gagal menghapus soal.");
+    }
+  };
+
+  const handleUnlockStudent = async (studentId) => {
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'student_sessions', studentId);
+      await updateDoc(docRef, {
+        status: "aktif",
+        warnings: 0,
+        isLocked: false
+      });
+      showToast(`Sesi siswa ${studentId.toUpperCase()} telah di-Unlock!`);
+    } catch (err) {
+      console.error(err);
+      showToast("Gagal meng-Unlock siswa.");
+    }
+  };
+
+  const confirmResetAllSessions = async () => {
+    try {
+      const querySnapshot = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'student_sessions'));
+      for (const docSnap of querySnapshot.docs) {
+        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'student_sessions', docSnap.id));
+      }
+      setLiveStudents([]);
+      setShowResetWarning(false);
+      showToast("Seluruh sesi ujian berhasil direset.");
+    } catch (err) {
+      console.error(err);
+      showToast("Gagal meriset sesi siswa.");
+    }
+  };
+
+  // Helper formatting timer
+  const formatTime = (secs) => {
+    const mins = Math.floor(secs / 60);
+    const remainingSecs = secs % 60;
+    return `${mins.toString().padStart(2, '0')}:${remainingSecs.toString().padStart(2, '0')}`;
+  };
+
+  // Helper untuk melacak status pengerjaan soal siswa
+  const getQuestionStatus = (qId) => {
+    const ans = studentAnswers[qId];
+    if (!ans) return "empty";
+    const { t1, t2, t3 } = ans;
+    if (t1 !== null && t2 !== null && t3 !== null) return "complete";
+    if (t1 !== null || t2 !== null || t3 !== null) return "partial";
+    return "empty";
+  };
+
+  const getAggregatedStats = () => {
+    const filteredLive = liveStudents.filter(s => classFilter === "Semua" || s.class === classFilter);
+
+    const total = filteredLive.length;
+    const completed = filteredLive.filter(s => s.status === 'selesai').length;
+    const active = filteredLive.filter(s => s.status === 'aktif').length;
+    const locked = filteredLive.filter(s => s.status === 'terkunci').length;
+
+    let categoryDistribution = {
+      "Memahami Konsep": 0,
+      "Memahami Konsep tetapi Ragu-ragu": 0,
+      "Miskonsepsi": 0,
+      "Tidak Memahami Konsep": 0
+    };
+
+    filteredLive.forEach(student => {
+      if (student.evaluatedResults) {
+        student.evaluatedResults.forEach(res => {
+          if (categoryDistribution[res.diagnosticCategory] !== undefined) {
+            categoryDistribution[res.diagnosticCategory]++;
+          }
+        });
+      }
+    });
+
+    return { total, completed, active, locked, categoryDistribution };
+  };
+
+  const stats = getAggregatedStats();
+
+  const handleExitTesting = () => {
+    setShowExitWarning(true);
+  };
+
+  const confirmExit = () => {
+    setRole('siswa');
+    setStudentStatus("idle");
+    setWarningsCount(0);
+    setIsLocked(false);
+    setExamSubmitted(false);
+    setIsTeacherAuthenticated(false);
+    setTeacherPassword("");
+    setUsername("");
+    setFullName("");
+    setStudentClass("");
+    setShowExitWarning(false);
+  };
+
+  // Extract unique classes dynamically
+  const uniqueClassesInDatabase = Array.from(new Set(allowedStudents.map(s => s.class))).sort();
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans selection:bg-blue-100 antialiased flex flex-col justify-between">
+      
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="fixed top-5 left-1/2 transform -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-xl shadow-xl border border-slate-700 max-w-md text-center font-medium animate-bounce flex items-center space-x-2">
+          <span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-500 animate-ping"></span>
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* --- NAVIGATION BAR --- */}
+      <header className="bg-white border-b border-slate-200/80 sticky top-0 z-40 backdrop-blur-md bg-opacity-95">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
+          
+          {/* Logo Brand */}
+          <div 
+            className="flex items-center space-x-3 cursor-pointer hover:opacity-80 transition"
+            onClick={() => confirmExit()}
+          >
+            <img 
+              src="logo ulm.webp" 
+              onError={(e) => {
+                e.target.onerror = null;
+                e.target.src = "https://upload.wikimedia.org/wikipedia/commons/e/e9/Logo_Unlam.png";
+              }} 
+              alt="Logo ULM" 
+              className="w-10 h-10 object-contain drop-shadow-sm" 
+            />
+            <div className="h-7 w-px bg-slate-200 mx-1 hidden sm:block"></div>
+            <div>
+              <h1 className="text-base font-extrabold text-slate-900 tracking-tight leading-tight">GeoDiagnostik XI</h1>
+              <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Universitas Lambung Mangkurat</p>
+            </div>
+          </div>
+
+          {/* Teacher / Student Switch */}
+          <div className="flex items-center space-x-2.5">
+            {studentStatus === "testing" && role === 'siswa' ? (
+              <button 
+                onClick={handleExitTesting}
+                className="bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition flex items-center space-x-1.5 border border-slate-200"
+              >
+                <span>Keluar Ujian</span>
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>
+                </svg>
+              </button>
+            ) : role === 'guru' ? (
+              <button
+                onClick={() => confirmExit()}
+                className="bg-blue-50 hover:bg-blue-100 text-blue-700 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition flex items-center space-x-1.5 border border-blue-100"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                </svg>
+                <span>Portal Siswa</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => setRole('guru')}
+                className="text-slate-500 hover:text-indigo-600 bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-100 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition flex items-center space-x-1.5"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
+                </svg>
+                <span>Area Guru</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </header>
+
+      {/* --- MAIN CONTENT WINDOW --- */}
+      <main className="flex-grow max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8 flex flex-col justify-center">
+
+        {loading ? (
+          <div className="flex flex-col items-center justify-center py-20">
+            <div className="animate-spin rounded-full h-10 w-10 border-2 border-t-transparent border-blue-600"></div>
+            <p className="mt-4 text-slate-500 text-xs tracking-wider">Menghubungkan ke Cloud Database...</p>
+          </div>
+        ) : role === 'siswa' && studentStatus === 'idle' ? (
+          
+          /* --- DIRECT ULTRA-CLEAN STUDENT PORTAL & LANDING PAGE --- */
+          <div className="max-w-md mx-auto w-full animate-fade-in flex flex-col justify-center items-center py-6">
+            <div className="bg-white border border-slate-100 rounded-[2rem] shadow-2xl shadow-slate-200/50 p-8 w-full relative overflow-hidden">
+              <div className="flex flex-col items-center justify-center mb-6">
+                <img 
+                  src="LOGO MAN2.jpg" 
+                  onError={(e) => {
+                    e.target.onerror = null;
+                    e.target.src = "https://upload.wikimedia.org/wikipedia/commons/4/41/Kementerian_Agama_Republik_Indonesia_Logo.png";
+                  }}
+                  alt="Logo MAN 2 Banjarmasin" 
+                  className="h-16 w-auto object-contain mb-3 drop-shadow-sm" 
+                />
+                <h3 className="text-xl font-extrabold text-slate-900 tracking-tight text-center">MAN 2 Kota Banjarmasin</h3>
+                <p className="text-[10px] text-slate-500 font-bold text-center mt-1 uppercase tracking-widest">Portal Ujian Siswa</p>
+              </div>
+
+              <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-100 text-xs text-slate-600 mb-6 flex items-center justify-between">
+                <span className="font-medium">Waktu: <strong className="text-slate-900">{examDuration} Menit</strong></span>
+                <span className="text-slate-300">|</span>
+                <span className="font-medium">Token: <strong className="font-mono text-indigo-600 font-bold">{activeToken}</strong></span>
+              </div>
+
+              <form onSubmit={handleStudentLogin} className="space-y-4">
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5 ml-1">NISN / Username Unik</label>
+                  <input
+                    type="text"
+                    required
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value.replace(/\s+/g, ''))}
+                    placeholder="Masukkan NISN Anda"
+                    className="w-full bg-slate-50/50 border border-slate-200 rounded-2xl px-4 py-3.5 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition placeholder:text-slate-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5 ml-1">Konfirmasi Nama Lengkap</label>
+                  <input
+                    type="text"
+                    required
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    placeholder="Ketik Nama Lengkap Anda"
+                    className="w-full bg-slate-50/50 border border-slate-200 rounded-2xl px-4 py-3.5 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition placeholder:text-slate-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5 ml-1">Token Sesi</label>
+                  <input
+                    type="text"
+                    required
+                    value={examToken}
+                    onChange={(e) => setExamToken(e.target.value)}
+                    placeholder="TOKEN AKTIF"
+                    className="w-full bg-slate-100 border border-slate-200 rounded-2xl px-4 py-3.5 text-xs font-mono uppercase font-bold tracking-widest text-slate-500 cursor-not-allowed focus:outline-none"
+                    readOnly
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-4 px-4 rounded-2xl transition duration-200 text-xs shadow-lg shadow-slate-900/20 flex items-center justify-center space-x-2 mt-6"
+                >
+                  <span>Masuk Lembar Ujian</span>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                </button>
+              </form>
+            </div>
+          </div>
+        ) : role === 'siswa' && studentStatus === 'locked' ? (
+          
+          /* --- SISWA SCREEN: LOCKED (ANTI-CHEAT ACTIVE) --- */
+          <div className="max-w-md mx-auto text-center bg-white border border-rose-100 rounded-2xl shadow-xl p-8 animate-fade-in relative overflow-hidden">
+            <div className="absolute top-0 inset-x-0 h-1.5 bg-rose-500"></div>
+            <div className="w-14 h-14 bg-rose-50 text-rose-500 rounded-2xl flex items-center justify-center mx-auto mb-5">
+              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
+              </svg>
+            </div>
+            <h2 className="text-xl font-bold text-slate-900 mb-2">Ujian Anda Ditangguhkan!</h2>
+            <p className="text-slate-500 text-xs mb-5 leading-relaxed">
+              Sistem mendeteksi Anda telah meninggalkan halaman ujian atau berpindah tab browser sebanyak 3 kali. Lembar pengerjaan Anda telah terkunci secara otomatis.
+            </p>
+            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-left mb-6 space-y-1.5">
+              <p className="text-xs text-slate-600"><span className="font-semibold text-slate-800">Nama:</span> {fullName}</p>
+              <p className="text-xs text-slate-600"><span className="font-semibold text-slate-800">Kelas:</span> {studentClass}</p>
+              <p className="text-xs text-slate-600"><span className="font-semibold text-slate-800">NISN:</span> {username.toUpperCase()}</p>
+            </div>
+            <p className="text-slate-400 text-[11px] italic leading-relaxed">
+              *Silakan hubungi Guru Anda untuk melakukan pembukaan akses (Unlock) melalui dasbor pengawas guru.
+            </p>
+          </div>
+        ) : role === 'siswa' && studentStatus === 'finished' ? (
+          
+          /* --- SISWA SCREEN: COMPLETED --- */
+          <div className="max-w-md mx-auto text-center bg-white border border-emerald-100 rounded-2xl shadow-xl p-8 animate-fade-in relative overflow-hidden">
+            <div className="absolute top-0 inset-x-0 h-1.5 bg-emerald-500"></div>
+            <div className="w-14 h-14 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-5">
+              <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+              </svg>
+            </div>
+            <h2 className="text-xl font-bold text-slate-900 mb-2">Terima Kasih, Ujian Selesai!</h2>
+            <p className="text-slate-500 text-xs mb-5 leading-relaxed">
+              Lembar jawaban asesmen Anda telah aman tersimpan di cloud database. Guru Anda kini dapat menganalisis hasil kognitif Anda secara langsung berdasarkan kelas Anda.
+            </p>
+            <button
+              onClick={() => confirmExit()}
+              className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold transition duration-150"
+            >
+              Kembali ke Beranda
+            </button>
+          </div>
+        ) : role === 'siswa' && studentStatus === 'testing' ? (
+          
+          /* --- SISWA SCREEN: INTERACTIVE ASSESSMENT --- */
+          <div className="max-w-5xl mx-auto w-full">
+            <div className="bg-white border border-slate-200/80 rounded-2xl p-4 mb-5 flex flex-col sm:flex-row justify-between items-center space-y-3 sm:space-y-0 shadow-sm">
+              <div className="flex items-center space-x-2.5 text-xs text-slate-700">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span className="font-bold text-slate-900">{fullName} ({studentClass})</span>
+                <span className="text-slate-300">|</span>
+                <span className="text-slate-500 font-mono text-[10px]">{username.toUpperCase()}</span>
+              </div>
+              
+              {/* COUNTDOWN TIMER */}
+              <div className="flex items-center space-x-4">
+                <div className="flex items-center space-x-2 bg-slate-900 text-white px-3.5 py-1.5 rounded-xl border border-slate-800">
+                  <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                  </svg>
+                  <span className="font-mono text-xs font-bold tracking-wider">{formatTime(secondsLeft)}</span>
+                </div>
+
+                <div className="flex items-center space-x-2">
+                  <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Beralih Tab:</span>
+                  <span className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold ${warningsCount > 1 ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-slate-50 text-slate-600 border border-slate-200'}`}>
+                    {warningsCount}/3 Peringatan
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* PETA NAVIGASI SOAL */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 mb-5 shadow-sm">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">Peta Navigasi Soal</h4>
+                  <p className="text-[10px] text-slate-500 mt-0.5">Pilih atau lompat ke soal mana saja dengan mudah.</p>
+                </div>
+                
+                {/* Status Indicator Badges */}
+                <div className="flex items-center gap-3.5 flex-wrap">
+                  <span className="flex items-center space-x-1 text-[10px] text-slate-600">
+                    <span className="w-2.5 h-2.5 rounded-md bg-emerald-500 border border-emerald-600 inline-block"></span>
+                    <span>Lengkap</span>
+                  </span>
+                  <span className="flex items-center space-x-1 text-[10px] text-slate-600">
+                    <span className="w-2.5 h-2.5 rounded-md bg-amber-400 border border-amber-500 inline-block"></span>
+                    <span>Sebagian</span>
+                  </span>
+                  <span className="flex items-center space-x-1 text-[10px] text-slate-600">
+                    <span className="w-2.5 h-2.5 rounded-md bg-slate-100 border border-slate-200 inline-block"></span>
+                    <span>Belum Diisi</span>
+                  </span>
+                </div>
+              </div>
+
+              {/* Grid buttons mapping */}
+              <div className="grid grid-cols-4 sm:grid-cols-8 gap-2.5 mt-4">
+                {questions.map((q, idx) => {
+                  const status = getQuestionStatus(q.id);
+                  const isCurrent = currentQuestionIndex === idx;
+
+                  let btnStyle = "bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200";
+                  if (status === "complete") btnStyle = "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100";
+                  else if (status === "partial") btnStyle = "bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100";
+
+                  return (
+                    <button
+                      key={q.id}
+                      onClick={() => {
+                        setCurrentQuestionIndex(idx);
+                        updateStudentSessionInDB({ currentQuestionIndex: idx });
+                      }}
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold transition duration-150 flex flex-col items-center justify-center space-y-0.5 relative ${btnStyle} ${
+                        isCurrent ? 'ring-2 ring-offset-2 ring-blue-600 border-transparent scale-105' : ''
+                      }`}
+                    >
+                      <span className="text-[10px] font-mono opacity-60">SOAL</span>
+                      <span className="text-xs">{idx + 1}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid lg:grid-cols-12 gap-6">
+              {/* Left Column: Geometric Cartesian Canvas (SVG) */}
+              <div className="lg:col-span-5 bg-white border border-slate-200 rounded-2xl p-5 shadow-sm flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between mb-3 border-b border-slate-100 pb-2">
+                    <h3 className="text-xs font-bold text-slate-950 uppercase tracking-wider">Visualisasi Koordinat</h3>
+                    <span className="bg-blue-50 text-blue-700 border border-blue-100 text-[10px] px-2.5 py-0.5 rounded-full font-bold">
+                      {questions[currentQuestionIndex].topic}
+                    </span>
+                  </div>
+                  <p className="text-slate-500 text-[11px] mb-4">
+                    Perhatikan posisi titik asal dan lakukan simulasi transformasi geometri sesuai petunjuk soal.
+                  </p>
+                </div>
+
+                {/* SVG Cartesian Canvas */}
+                <div className="relative aspect-square w-full bg-slate-950 rounded-xl overflow-hidden border border-slate-800 shadow-inner flex items-center justify-center">
+                  <svg className="w-full h-full" viewBox="-12 -12 24 24">
+                    {/* Grid lines */}
+                    {Array.from({ length: 25 }, (_, i) => i - 12).map((val) => (
+                      <React.Fragment key={val}>
+                        {val !== 0 && (
+                          <>
+                            <line x1={val} y1="-12" x2={val} y2="12" stroke="#1e293b" strokeWidth="0.05" />
+                            <line x1="-12" y1={val} x2="12" y2={val} stroke="#1e293b" strokeWidth="0.05" />
+                          </>
+                        )}
+                      </React.Fragment>
+                    ))}
+                    
+                    {/* Axis lines */}
+                    <line x1="-12" y1="0" x2="12" y2="0" stroke="#475569" strokeWidth="0.1" />
+                    <line x1="0" y1="-12" x2="0" y2="12" stroke="#475569" strokeWidth="0.1" />
+
+                    {/* Axis Marks */}
+                    <text x="11.2" y="-0.3" fill="#94a3b8" fontSize="0.8" fontWeight="bold">X</text>
+                    <text x="0.3" y="-11" fill="#94a3b8" fontSize="0.8" fontWeight="bold">Y</text>
+
+                    {/* Markers / Coordinates */}
+                    <circle cx="0" cy="0" r="0.2" fill="#fff" />
+
+                    {/* DRAW QUESTION SPECIFIC ASSETS */}
+                    {questions[currentQuestionIndex].id === "default_1" && (
+                      <>
+                        <circle cx="2" cy="3" r="0.4" fill="#3b82f6" />
+                        <text x="2.5" y="3.5" fill="#3b82f6" fontSize="0.8" fontWeight="bold">A(2,-3)</text>
+                        <line x1="2" y1="3" x2="-1" y2="-2" stroke="#e2e8f0" strokeWidth="0.1" strokeDasharray="0.2" />
+                        <circle cx="-1" cy="-2" r="0.4" fill="#10b981" />
+                        <text x="-3" y="-2.5" fill="#10b981" fontSize="0.8" fontWeight="bold">A'(-1,2)</text>
+                      </>
+                    )}
+
+                    {questions[currentQuestionIndex].id === "default_2" && (
+                      <>
+                        <circle cx="-4" cy="-1" r="0.4" fill="#3b82f6" />
+                        <text x="-5" y="-1.5" fill="#3b82f6" fontSize="0.8" fontWeight="bold">B(-4,1)</text>
+                        <line x1="-10" y1="-10" x2="10" y2="10" stroke="#f43f5e" strokeWidth="0.15" strokeDasharray="0.3" />
+                        <text x="5" y="6" fill="#f43f5e" fontSize="0.7">Garis y = -x</text>
+                        <circle cx="-1" cy="-4" r="0.4" fill="#10b981" />
+                        <text x="0.5" y="-4.5" fill="#10b981" fontSize="0.8" fontWeight="bold">B'(-1,4)</text>
+                      </>
+                    )}
+
+                    {questions[currentQuestionIndex].id === "default_3" && (
+                      <>
+                        <circle cx="3" cy="-2" r="0.4" fill="#3b82f6" />
+                        <text x="3.5" y="-2.5" fill="#3b82f6" fontSize="0.8" fontWeight="bold">C(3,2)</text>
+                        <path d="M 3.605 0 A 3.605 3.605 0 0 1 2 3" fill="none" stroke="#64748b" strokeWidth="0.08" strokeDasharray="0.1" />
+                        <circle cx="2" cy="3" r="0.4" fill="#10b981" />
+                        <text x="2.5" y="4" fill="#10b981" fontSize="0.8" fontWeight="bold">C'(2,-3)</text>
+                      </>
+                    )}
+
+                    {questions[currentQuestionIndex].id === "default_4" && (
+                      <>
+                        <circle cx="1" cy="-2" r="0.3" fill="#f59e0b" />
+                        <text x="1.5" y="-2.5" fill="#f59e0b" fontSize="0.7" fontWeight="bold">P(1,2)</text>
+                        <circle cx="-2" cy="-4" r="0.4" fill="#3b82f6" />
+                        <text x="-4" y="-4.5" fill="#3b82f6" fontSize="0.8" fontWeight="bold">D(-2,4)</text>
+                        <line x1="1" y1="-2" x2="-8" y2="-8" stroke="#64748b" strokeWidth="0.06" strokeDasharray="0.2" />
+                        <circle cx="-8" cy="-8" r="0.4" fill="#10b981" />
+                        <text x="-11.5" y="-8.5" fill="#10b981" fontSize="0.8" fontWeight="bold">D'(-8,8)</text>
+                      </>
+                    )}
+                  </svg>
+                </div>
+                
+                <div className="mt-4 flex justify-between text-[11px] text-slate-500 font-medium">
+                  <span className="flex items-center space-x-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block"></span>
+                    <span>Titik Asal</span>
+                  </span>
+                  <span className="flex items-center space-x-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span>
+                    <span>Bayangan Akhir</span>
+                  </span>
+                </div>
+              </div>
+
+              {/* Right Column: Dynamic 3-Tier Interactive Interface */}
+              <div className="lg:col-span-7 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col justify-between">
+                <div>
+                  <div className="flex justify-between items-center mb-5">
+                    <span className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">SOAL {currentQuestionIndex + 1} DARI {questions.length}</span>
+                    <span className="bg-slate-100 text-slate-700 px-3 py-1 rounded-full text-xs font-semibold">
+                      Indikator Kognitif
+                    </span>
+                  </div>
+
+                  <div className="mb-6 select-none bg-slate-50 p-4.5 rounded-xl border border-slate-200">
+                    <p className="text-sm text-slate-700 font-medium leading-relaxed math-render" data-math={questions[currentQuestionIndex].instruction}>
+                      {questions[currentQuestionIndex].instruction}
+                    </p>
+                  </div>
+
+                  {/* --- TIER 1: ANSWER --- */}
+                  <div className="mb-6">
+                    <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider mb-3 flex items-center space-x-2">
+                      <span className="bg-blue-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-mono">1</span>
+                      <span>Tier 1: Pilihan Jawaban Koordinat</span>
+                    </h4>
+                    <p className="text-xs text-slate-500 mb-3 leading-relaxed">{questions[currentQuestionIndex].tier1.question}</p>
+                    
+                    <div className="grid grid-cols-1 gap-2.5">
+                      {questions[currentQuestionIndex].tier1.options.map((opt) => {
+                        const isSelected = studentAnswers[questions[currentQuestionIndex].id]?.t1 === opt.key;
+                        return (
+                          <button
+                            key={opt.key}
+                            onClick={() => handleStudentAnswerSelect('t1', opt.key)}
+                            className={`flex items-center space-x-3 text-left w-full px-4 py-3.5 rounded-xl border text-xs transition duration-150 min-h-[44px] ${
+                              isSelected 
+                                ? 'bg-blue-50 border-blue-500 text-blue-900 font-bold shadow-sm' 
+                                : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+                            }`}
+                          >
+                            <span className={`w-5.5 h-5.5 rounded-full flex items-center justify-center border font-bold text-xs transition ${
+                              isSelected ? 'bg-blue-600 text-white border-blue-600' : 'bg-slate-50 text-slate-400 border-slate-300'
+                            }`}>
+                              {opt.key}
+                            </span>
+                            <span className="math-render" data-math={opt.text}>{opt.text}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* --- TIER 2: REASON --- */}
+                  {studentAnswers[questions[currentQuestionIndex].id]?.t1 && (
+                    <div className="mb-6 animate-fade-in">
+                      <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider mb-3 flex items-center space-x-2">
+                        <span className="bg-indigo-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-mono">2</span>
+                        <span>Tier 2: Justifikasi Teoritis / Grafik Alasan</span>
+                      </h4>
+                      <p className="text-xs text-slate-500 mb-3 leading-relaxed">{questions[currentQuestionIndex].tier2.question}</p>
+
+                      <div className="grid grid-cols-1 gap-2.5">
+                        {questions[currentQuestionIndex].tier2.options.map((opt) => {
+                          const isSelected = studentAnswers[questions[currentQuestionIndex].id]?.t2 === opt.key;
+                          return (
+                            <button
+                              key={opt.key}
+                              onClick={() => handleStudentAnswerSelect('t2', opt.key)}
+                              className={`flex items-center space-x-3 text-left w-full px-4 py-3.5 rounded-xl border text-xs transition duration-150 min-h-[44px] ${
+                                isSelected 
+                                  ? 'bg-indigo-50 border-indigo-500 text-indigo-900 font-bold shadow-sm' 
+                                  : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+                              }`}
+                            >
+                              <span className={`w-5.5 h-5.5 rounded-full flex items-center justify-center border font-bold text-xs transition ${
+                                isSelected ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-50 text-slate-400 border-slate-300'
+                              }`}>
+                                {opt.key}
+                              </span>
+                              <span className="math-render" data-math={opt.text}>{opt.text}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* --- TIER 3: CONFIDENCE --- */}
+                  {studentAnswers[questions[currentQuestionIndex].id]?.t2 && (
+                    <div className="mb-6 animate-fade-in">
+                      <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider mb-3 flex items-center space-x-2">
+                        <span className="bg-teal-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-mono">3</span>
+                        <span>Tier 3: Konfirmasi Tingkat Keyakinan</span>
+                      </h4>
+                      <p className="text-xs text-slate-500 mb-3 leading-relaxed">
+                        Apakah Anda sangat yakin dengan kebenaran integrasi jawaban Anda pada Tier 1 dan Tier 2?
+                      </p>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <button
+                          onClick={() => handleStudentAnswerSelect('t3', 'yakin')}
+                          className={`flex flex-col items-center justify-center p-4 rounded-xl border text-center transition duration-150 min-h-[44px] ${
+                            studentAnswers[questions[currentQuestionIndex].id]?.t3 === 'yakin'
+                              ? 'bg-teal-50 border-teal-500 text-teal-950 font-bold shadow-sm'
+                              : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+                          }`}
+                        >
+                          <svg className="w-5 h-5 mb-1 text-teal-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                          </svg>
+                          <span className="text-xs">Sangat Yakin</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleStudentAnswerSelect('t3', 'tidak_yakin')}
+                          className={`flex flex-col items-center justify-center p-4 rounded-xl border text-center transition duration-150 min-h-[44px] ${
+                            studentAnswers[questions[currentQuestionIndex].id]?.t3 === 'tidak_yakin'
+                              ? 'bg-orange-50 border-orange-400 text-orange-950 font-bold shadow-sm'
+                              : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+                          }`}
+                        >
+                          <svg className="w-5 h-5 mb-1 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                          </svg>
+                          <span className="text-xs">Tidak Yakin</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Linear Navigation Action Panel */}
+                <div className="border-t border-slate-100 pt-5 mt-6 flex justify-between items-center">
+                  <button
+                    onClick={handlePrevQuestion}
+                    disabled={currentQuestionIndex === 0}
+                    className={`px-4.5 py-2.5 rounded-xl text-xs font-semibold border flex items-center space-x-1.5 transition ${
+                      currentQuestionIndex === 0 
+                        ? 'opacity-40 cursor-not-allowed text-slate-400 border-slate-200' 
+                        : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path>
+                    </svg>
+                    <span>Kembali</span>
+                  </button>
+
+                  {currentQuestionIndex === questions.length - 1 ? (
+                    <button
+                      onClick={handleStudentSubmit}
+                      className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-xs font-bold transition flex items-center space-x-1.5 shadow-sm shadow-emerald-500/10"
+                    >
+                      <span>Kirim Jawaban</span>
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7"></path>
+                      </svg>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleNextQuestion}
+                      className={`px-5 py-2.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 transition ${
+                        studentAnswers[questions[currentQuestionIndex].id]?.t3
+                          ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-sm'
+                          : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                      }`}
+                    >
+                      <span>Soal Berikutnya</span>
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path>
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : role === 'guru' && !isTeacherAuthenticated ? (
+          
+          /* --- GURU AUTHENTICATION PAGE --- */
+          <div className="max-w-md mx-auto w-full bg-white border border-slate-200 rounded-2xl shadow-xl p-8 animate-fade-in relative overflow-hidden">
+            <div className="absolute top-0 inset-x-0 h-1.5 bg-indigo-600"></div>
+            
+            <h2 className="text-xl font-extrabold text-slate-900 mb-1 text-center">Dasbor Pengawas Guru</h2>
+            <p className="text-slate-500 text-xs text-center mb-6">Masukkan kata sandi pengawas untuk memantau pengerjaan siswa.</p>
+
+            <form onSubmit={handleTeacherLogin} className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">Kata Sandi Pengawas</label>
+                <input
+                  type="password"
+                  required
+                  value={teacherPassword}
+                  onChange={(e) => setTeacherPassword(e.target.value)}
+                  placeholder="Ketik password pengawas (contoh: guru123)"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 transition placeholder:text-slate-400"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 px-4 rounded-xl transition duration-150 text-xs shadow-md shadow-indigo-500/10"
+              >
+                Verifikasi Otoritas
+              </button>
+            </form>
+          </div>
+        ) : (
+          
+          /* --- GURU SCREEN: LIVE MONITOR & ANALYSIS DASHBOARD --- */
+          <div className="space-y-6 animate-fade-in w-full">
+            
+            {/* Header Dashboard Control */}
+            <div className="bg-slate-900 text-white rounded-2xl p-6 shadow-xl flex flex-col lg:flex-row justify-between lg:items-center gap-6">
+              <div>
+                <h2 className="text-lg font-bold tracking-tight">Kontrol & Parameter Sesi Diagnostik</h2>
+                <p className="text-[11px] text-slate-400 mt-1">Konfigurasi token pengerjaan, status sesi, dan durasi ujian secara real-time.</p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-4">
+                {/* FILTER KELAS AKTIF */}
+                <div className="flex flex-col space-y-1">
+                  <span className="text-[9px] text-slate-400 font-bold uppercase">Filter Kelas Dasbor</span>
+                  <select
+                    value={classFilter}
+                    onChange={(e) => setClassFilter(e.target.value)}
+                    className="bg-slate-800 border border-slate-700 text-white font-bold text-xs px-3 py-2 rounded-xl focus:outline-none w-32"
+                  >
+                    <option value="Semua">Semua Kelas</option>
+                    {uniqueClassesInDatabase.map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* SETTING TOKEN */}
+                <div className="flex flex-col space-y-1">
+                  <span className="text-[9px] text-slate-400 font-bold uppercase">Token Ujian</span>
+                  <input
+                    type="text"
+                    value={activeToken}
+                    onChange={(e) => setActiveToken(e.target.value.toUpperCase())}
+                    className="bg-slate-800 border border-slate-700 text-white font-mono font-bold text-xs px-3 py-2 rounded-xl focus:outline-none w-28 uppercase"
+                  />
+                </div>
+
+                {/* SETTING DURASI UJIAN */}
+                <div className="flex flex-col space-y-1">
+                  <span className="text-[9px] text-slate-400 font-bold uppercase">Lama Ujian (Menit)</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="180"
+                    value={examDuration}
+                    onChange={(e) => setExamDuration(Math.max(1, parseInt(e.target.value) || 0))}
+                    className="bg-slate-800 border border-slate-700 text-white font-bold text-xs px-3 py-2 rounded-xl focus:outline-none w-24"
+                  />
+                </div>
+
+                {/* STATUS SESI */}
+                <div className="flex flex-col space-y-1">
+                  <span className="text-[9px] text-slate-400 font-bold uppercase">Status Sesi</span>
+                  <button
+                    onClick={() => {
+                      setIsTokenActive(!isTokenActive);
+                    }}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-bold transition ${
+                      isTokenActive ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white'
+                    }`}
+                  >
+                    {isTokenActive ? 'Sesi Dibuka' : 'Sesi Ditutup'}
+                  </button>
+                </div>
+
+                {/* SAVE PARAMETERS BUTTON */}
+                <div className="flex flex-col space-y-1 pt-4">
+                  <button 
+                    onClick={handleUpdateGlobalSettings}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-xs font-bold transition flex items-center space-x-1"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"></path>
+                    </svg>
+                    <span>Simpan</span>
+                  </button>
+                </div>
+
+                {/* RESET ALL SESSIONS */}
+                <div className="flex flex-col space-y-1 pt-4">
+                  <button
+                    onClick={() => setShowResetWarning(true)}
+                    className="bg-rose-950/40 hover:bg-rose-900 text-rose-200 border border-rose-850 px-3.5 py-2 rounded-xl text-xs font-bold transition"
+                  >
+                    Reset Sesi
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Metrics Grid */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-sm">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Partisipan Kelas ({classFilter})</p>
+                <p className="text-2xl font-black text-slate-900">{stats.total}</p>
+              </div>
+              <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-sm">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Pengerjaan Aktif</p>
+                <p className="text-2xl font-black text-blue-600">{stats.active}</p>
+              </div>
+              <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-sm">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Sesi Terkunci</p>
+                <p className="text-2xl font-black text-rose-600">{stats.locked}</p>
+              </div>
+              <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-sm">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Selesai Ujian</p>
+                <p className="text-2xl font-black text-emerald-600">{stats.completed}</p>
+              </div>
+            </div>
+
+            {/* --- DATABASE SISWA MULTI-KELAS (GURU) --- */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+              <div className="flex flex-col sm:flex-row justify-between sm:items-center border-b border-slate-100 pb-4 mb-4 gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-950 uppercase tracking-wider">📋 Database Siswa Multi-Kelas (Terdaftar)</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">Siswa wajib terdaftar di bawah ini agar sistem mengizinkan login ke lembar ujian.</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setIsBulkMode(false);
+                    setShowAddStudentModal(true);
+                  }}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4 py-2.5 rounded-xl text-xs flex items-center space-x-2 transition shadow-sm"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path>
+                  </svg>
+                  <span>Daftarkan Siswa (Multi-Kelas)</span>
+                </button>
+              </div>
+
+              {/* Table of allowed students in master DB */}
+              <div className="overflow-x-auto max-h-60 border border-slate-100 rounded-xl">
+                <table className="min-w-full divide-y divide-slate-200 text-left text-xs text-slate-700">
+                  <thead className="bg-slate-50 text-slate-600 uppercase tracking-wider text-[10px] font-bold sticky top-0">
+                    <tr>
+                      <th className="px-6 py-3">Nama Siswa</th>
+                      <th className="px-6 py-3">NISN / Username</th>
+                      <th className="px-6 py-3">Kelas</th>
+                      <th className="px-6 py-3 text-right">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-150">
+                    {allowedStudents.length === 0 ? (
+                      <tr>
+                        <td colSpan="4" className="text-center py-6 text-slate-400 font-medium">Belum ada database siswa terdaftar. Daftarkan siswa agar bisa login.</td>
+                      </tr>
+                    ) : (
+                      allowedStudents
+                        .filter(s => classFilter === "Semua" || s.class === classFilter)
+                        .map((student) => (
+                          <tr key={student.usernameId} className="hover:bg-slate-50/50 transition">
+                            <td className="px-6 py-2.5 font-bold text-slate-900">{student.fullName}</td>
+                            <td className="px-6 py-2.5 font-mono text-slate-500">{student.usernameId.toUpperCase()}</td>
+                            <td className="px-6 py-2.5"><span className="bg-slate-100 border border-slate-200 px-2 py-0.5 rounded text-[10px] font-bold text-slate-700">{student.class}</span></td>
+                            <td className="px-6 py-2.5 text-right">
+                              <button
+                                onClick={() => handleDeleteAllowedStudent(student.usernameId)}
+                                className="text-rose-600 hover:text-rose-800 text-[10px] font-bold transition"
+                              >
+                                Hapus
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* GURU BANK SOAL INTERAKTIF */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+              <div className="flex flex-col sm:flex-row justify-between sm:items-center border-b border-slate-100 pb-4 mb-4 gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-950 uppercase tracking-wider">📦 Bank Soal & Asesmen Diagnostik</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">Kelola butir soal evaluasi Three-Tier di dalam kelas ampu Anda.</p>
+                </div>
+                <button
+                  onClick={() => setShowAddQuestionModal(true)}
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2 rounded-xl text-xs flex items-center space-x-2 transition"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 4v16m8-8H4"></path>
+                  </svg>
+                  <span>Tambah Soal Diagnostik</span>
+                </button>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                {questions.map((q, idx) => (
+                  <div key={q.id} className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 flex flex-col justify-between">
+                    <div>
+                      <div className="flex justify-between items-start mb-2">
+                        <span className="bg-slate-200 text-slate-800 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">
+                          {q.topic}
+                        </span>
+                        <span className="text-xs text-slate-400 font-bold">SOAL #{idx + 1}</span>
+                      </div>
+                      <p className="text-xs text-slate-700 line-clamp-3 mb-3 font-medium math-render" data-math={q.instruction}>
+                        {q.instruction}
+                      </p>
+                    </div>
+
+                    <div className="flex justify-between items-center border-t border-slate-100 pt-3 mt-2">
+                      <span className="text-[10px] text-slate-400 italic">
+                        {q.id.startsWith("default_") ? "Soal Bawaan (Read-Only)" : "Soal Kustom Guru"}
+                      </span>
+                      {!q.id.startsWith("default_") && (
+                        <button
+                          onClick={() => handleDeleteQuestion(q.id)}
+                          className="text-rose-600 hover:text-rose-800 text-xs font-bold transition flex items-center space-x-1"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                          </svg>
+                          <span>Hapus</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Visual Analytics Row */}
+            <div className="grid md:grid-cols-12 gap-6">
+              <div className="md:col-span-5 bg-white border border-slate-200 p-6 rounded-2xl shadow-sm">
+                <h3 className="text-xs font-bold text-slate-950 uppercase tracking-wider mb-4">Pemetaan Kognitif Kelas ({classFilter})</h3>
+                <div className="space-y-4">
+                  {Object.entries(stats.categoryDistribution).map(([cat, val]) => {
+                    const totalAnswers = Object.values(stats.categoryDistribution).reduce((a, b) => a + b, 0) || 1;
+                    const pct = Math.round((val / totalAnswers) * 100);
+                    let barColor = "bg-blue-600";
+                    if (cat === "Miskonsepsi") barColor = "bg-rose-500";
+                    if (cat === "Tidak Memahami Konsep") barColor = "bg-amber-500";
+                    if (cat === "Memahami Konsep tetapi Ragu-ragu") barColor = "bg-teal-500";
+
+                    return (
+                      <div key={cat} className="space-y-1.5">
+                        <div className="flex justify-between text-xs text-slate-700">
+                          <span className="font-semibold text-slate-800">{cat}</span>
+                          <span className="font-mono text-slate-500">{val} ({pct}%)</span>
+                        </div>
+                        <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                          <div className={`h-full ${barColor}`} style={{ width: `${pct}%` }}></div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Automatic Pedagogical Intervention Planner */}
+              <div className="md:col-span-7 bg-white border border-slate-200 p-6 rounded-2xl shadow-sm flex flex-col justify-between">
+                <div>
+                  <h3 className="text-xs font-bold text-slate-950 uppercase tracking-wider mb-3">Tindakan Pedagogis Terarah ({classFilter})</h3>
+                  <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+                    Sistem mendeteksi gap kognitif siswa dan merumuskan saran intervensi pembelajaran otomatis:
+                  </p>
+
+                  <div className="space-y-3.5">
+                    <div className="p-3.5 bg-rose-50/50 border border-rose-100/70 rounded-xl text-xs flex space-x-3">
+                      <div className="text-rose-600 font-bold shrink-0">Strategi Miskonsepsi:</div>
+                      <div className="text-slate-700 leading-relaxed">
+                        Fokus pada penyajian <span className="font-semibold">visualisasi anomali / counter-example</span>. Gunakan papan koordinat interaktif untuk membuktikan secara visual kekeliruan pemetaan diagonal mereka.
+                      </div>
+                    </div>
+
+                    <div className="p-3.5 bg-amber-50/50 border border-amber-100/70 rounded-xl text-xs flex space-x-3">
+                      <div className="text-amber-600 font-bold shrink-0">Saran Tidak Paham:</div>
+                      <div className="text-slate-700 leading-relaxed">
+                        Lakukan <span className="font-semibold">drill materi penunjang</span> berupa relasi penambahan matriks 2D sebelum mengintegrasikannya dengan persamaan skala dilatasi kurikulum lanjutan.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-100 pt-3 mt-4 text-[10px] text-slate-400 italic">
+                  *Matriks klasifikasi dihitung secara real-time berdasarkan respons kuesioner berlapis siswa.
+                </div>
+              </div>
+            </div>
+
+            {/* Live Student Tracking Table */}
+            <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-6 py-4.5 border-b border-slate-100 flex justify-between items-center bg-slate-50/55">
+                <h3 className="text-xs font-bold text-slate-950 uppercase tracking-wider">Monitor Sesi Aktif Kelas ({classFilter})</h3>
+                <span className="bg-indigo-50 text-indigo-700 text-[10px] font-bold px-3 py-1 rounded-full border border-indigo-100 flex items-center space-x-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 animate-ping"></span>
+                  <span>Sinkronisasi Otomatis Aktif</span>
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-slate-200 text-left text-xs text-slate-700">
+                  <thead className="bg-slate-50 text-slate-600 uppercase tracking-wider text-[10px] font-bold">
+                    <tr>
+                      <th className="px-6 py-4">Nama Lengkap</th>
+                      <th className="px-6 py-4">NISN / ID</th>
+                      <th className="px-6 py-4">Kelas</th>
+                      <th className="px-6 py-4">Status</th>
+                      <th className="px-6 py-4">Progres</th>
+                      <th className="px-6 py-4">Melanggar Tab</th>
+                      <th className="px-6 py-4">Tindakan Diagnostik</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-150">
+                    {liveStudents.filter(s => classFilter === "Semua" || s.class === classFilter).length === 0 ? (
+                      <tr>
+                        <td colSpan="7" className="text-center py-10 text-slate-400 font-medium">Belum ada data pengerjaan ujian siswa yang masuk untuk kelas ini.</td>
+                      </tr>
+                    ) : (
+                      liveStudents
+                        .filter(s => classFilter === "Semua" || s.class === classFilter)
+                        .map((student) => {
+                          let statusBadge = (
+                            <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-bold text-[10px] uppercase">Idle</span>
+                          );
+                          if (student.status === 'aktif') {
+                            statusBadge = <span className="bg-blue-100 text-blue-800 px-2.5 py-0.5 rounded-md font-bold text-[10px] uppercase">Aktif</span>;
+                          } else if (student.status === 'terkunci') {
+                            statusBadge = <span className="bg-red-100 text-red-800 px-2.5 py-0.5 rounded-md font-bold text-[10px] uppercase animate-pulse">🚨 Terkunci</span>;
+                          } else if (student.status === 'selesai') {
+                            statusBadge = <span className="bg-emerald-100 text-emerald-800 px-2.5 py-0.5 rounded-md font-bold text-[10px] uppercase">Selesai</span>;
+                          }
+
+                          return (
+                            <tr key={student.id} className="hover:bg-slate-50/50 transition duration-150">
+                              <td className="px-6 py-4 font-bold text-slate-900">{student.fullName}</td>
+                              <td className="px-6 py-4 font-mono text-slate-500">{student.username.toUpperCase()}</td>
+                              <td className="px-6 py-4"><span className="bg-indigo-50 border border-indigo-150 text-indigo-700 font-bold px-2 py-0.5 rounded text-[10px]">{student.class || 'N/A'}</span></td>
+                              <td className="px-6 py-4">{statusBadge}</td>
+                              <td className="px-6 py-4 font-semibold text-slate-600">No. {student.status === 'selesai' ? questions.length : (student.currentQuestionIndex || 0) + 1}</td>
+                              <td className="px-6 py-4 font-mono font-bold text-slate-600">{student.warnings || 0} / 3</td>
+                              <td className="px-6 py-4 space-x-2">
+                                {student.status === 'terkunci' && (
+                                  <button
+                                    onClick={() => handleUnlockStudent(student.username)}
+                                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold transition animate-pulse"
+                                  >
+                                    Unlock Sesi
+                                  </button>
+                                )}
+                                {student.status === 'selesai' && (
+                                  <button
+                                    onClick={() => setSelectedStudentForDetail(student)}
+                                    className="bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold transition flex items-center space-x-1"
+                                  >
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                                    <span>Lihat Analisis</span>
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* ANALYTICAL STUDENT MODAL WITH AI FEEDBACK FEATURE */}
+            {selectedStudentForDetail && (
+              <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 animate-scale-up">
+                  <div className="flex justify-between items-center border-b border-slate-100 pb-3 mb-4">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-950">Analisis Kognitif: {selectedStudentForDetail.fullName} ({selectedStudentForDetail.class})</h3>
+                      <p className="text-[11px] text-slate-500">Matriks klasifikasi diagnostik pemetaan geometri tingkat XI</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setSelectedStudentForDetail(null);
+                        setAiFeedbackText("");
+                      }}
+                      className="text-slate-400 hover:text-slate-600 font-bold p-1"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12"></path>
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Left: Raw Data */}
+                    <div className="space-y-3.5 max-h-[350px] overflow-y-auto pr-2 border-r border-slate-100">
+                      <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Riwayat Jawaban Multi-Tier</h4>
+                      {selectedStudentForDetail.evaluatedResults ? (
+                        selectedStudentForDetail.evaluatedResults.map((res, i) => {
+                          let catColor = "bg-blue-50 text-blue-800 border-blue-100";
+                          if (res.diagnosticCategory === "Miskonsepsi") catColor = "bg-rose-50 text-rose-850 border-rose-100";
+                          else if (res.diagnosticCategory === "Tidak Memahami Konsep") catColor = "bg-amber-50 text-amber-850 border-amber-100";
+                          else if (res.diagnosticCategory === "Memahami Konsep tetapi Ragu-ragu") catColor = "bg-teal-50 text-teal-850 border-teal-100";
+
+                          return (
+                            <div key={i} className="p-3 rounded-xl border border-slate-150 bg-slate-50/50 space-y-2">
+                              <div className="flex justify-between items-center">
+                                <span className="font-bold text-[11px] text-slate-800">Soal #{res.questionId}</span>
+                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold border ${catColor}`}>
+                                  {res.diagnosticCategory}
+                                </span>
+                              </div>
+                              <div className="text-[10px] text-slate-600 space-y-1">
+                                <p>• T1: <span className="font-semibold text-slate-900">{res.ansT1}</span> ({res.isT1Correct ? 'Benar' : 'Salah'})</p>
+                                <p>• T2: <span className="font-semibold text-slate-900">{res.ansT2}</span> ({res.isT2Correct ? 'Benar' : 'Salah'})</p>
+                                <p>• T3: <span className="font-semibold text-slate-900">{res.isConfident ? 'Yakin' : 'Ragu-ragu'}</span></p>
+                              </div>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <p className="text-xs text-slate-400">Data analisis belum siap.</p>
+                      )}
+                    </div>
+
+                    {/* Right: AI Feedback Panel */}
+                    <div className="flex flex-col h-full pl-2">
+                      <div className="flex justify-between items-center mb-3">
+                        <h4 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Tinjauan Kecerdasan Buatan</h4>
+                        <button
+                          onClick={handleAIGenerateFeedback}
+                          disabled={isAiFeedbackLoading}
+                          className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 px-3 py-1.5 rounded-lg text-[10px] font-bold transition flex items-center space-x-1.5"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                          <span>{isAiFeedbackLoading ? 'Menyusun Analisis...' : 'Analisis AI Personal'}</span>
+                        </button>
+                      </div>
+
+                      <div className="flex-grow bg-slate-50 border border-slate-200 rounded-xl p-4 overflow-y-auto">
+                        {isAiFeedbackLoading ? (
+                          <div className="flex flex-col items-center justify-center h-full text-slate-400 space-y-3">
+                            <div className="animate-spin rounded-full h-6 w-6 border-2 border-t-transparent border-indigo-600"></div>
+                            <span className="text-[10px] font-medium">AI sedang menganalisis pola jawaban siswa...</span>
+                          </div>
+                        ) : aiFeedbackText ? (
+                          <div className="text-[11px] leading-relaxed text-slate-700 space-y-3 whitespace-pre-wrap">
+                            {aiFeedbackText}
+                          </div>
+                        ) : (
+                          <div className="flex flex-col items-center justify-center h-full text-slate-400 text-[10px] text-center">
+                            <svg className="w-8 h-8 mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path></svg>
+                            <p>Klik tombol di atas untuk mendapatkan kesimpulan dan saran remedial spesifik menggunakan Gemini AI.</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 border-t border-slate-100 pt-4 flex justify-end">
+                    <button
+                      onClick={() => {
+                        setSelectedStudentForDetail(null);
+                        setAiFeedbackText("");
+                      }}
+                      className="px-4.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold transition"
+                    >
+                      Tutup Analisis
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* MODAL GURU: TAMBAH SOAL DIAGNOSTIK KUSTOM (WITH AI GENERATOR) */}
+            {showAddQuestionModal && (
+              <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4 backdrop-blur-sm overflow-y-auto">
+                <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 animate-scale-up my-8 max-h-[90vh] overflow-y-auto">
+                  <div className="flex justify-between items-center border-b border-slate-100 pb-3 mb-4">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-950">Tambah Soal Diagnostik Baru</h3>
+                      <p className="text-[11px] text-slate-500 font-medium">Buat struktur evaluasi multi-tier untuk kuis siswa.</p>
+                    </div>
+                    <button
+                      onClick={() => setShowAddQuestionModal(false)}
+                      className="text-slate-400 hover:text-slate-600 font-bold p-1"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12"></path>
+                      </svg>
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleCreateNewQuestion} className="space-y-4 text-xs">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 mb-1">Topik Transformasi</label>
+                        <select
+                          value={newQuestionTopic}
+                          onChange={(e) => setNewQuestionTopic(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        >
+                          <option value="Translasi (Pergeseran)">Translasi (Pergeseran)</option>
+                          <option value="Refleksi (Pencerminan)">Refleksi (Pencerminan)</option>
+                          <option value="Rotasi (Perputaran)">Rotasi (Perputaran)</option>
+                          <option value="Dilatasi (Perkalian Nilai)">Dilatasi (Perkalian Nilai)</option>
+                        </select>
+                      </div>
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          onClick={handleAIGenerateQuestion}
+                          disabled={isAiLoading}
+                          className={`w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center space-x-2 ${isAiLoading ? 'bg-indigo-100 text-indigo-400 cursor-not-allowed' : 'bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white shadow-md'}`}
+                        >
+                          {isAiLoading ? (
+                            <div className="animate-spin rounded-full h-4 w-4 border-2 border-t-transparent border-indigo-400"></div>
+                          ) : (
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                          )}
+                          <span>{isAiLoading ? 'Memproses Draft...' : 'Generate Soal Otomatis via AI'}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 mb-1">Instruksi Soal / Narasi Utama (Dukung LaTeX, contoh: $A(2,3)$)</label>
+                      <textarea
+                        required
+                        rows="2"
+                        value={newQuestionInstruction}
+                        onChange={(e) => setNewQuestionInstruction(e.target.value)}
+                        placeholder="Contoh: Titik $A(1, 2)$ ditranslasikan sebesar..."
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-medium"
+                      />
+                    </div>
+
+                    <div className="p-4 rounded-xl border border-blue-100 bg-blue-50/20 space-y-3">
+                      <h4 className="font-bold text-blue-900 uppercase tracking-wide">Penyusunan Tier 1 (Pertanyaan Utama & Pilihan Ganda)</h4>
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">Pertanyaan Konten (Tier 1)</label>
+                        <input
+                          type="text"
+                          required
+                          value={newQuestionT1Text}
+                          onChange={(e) => setNewQuestionT1Text(e.target.value)}
+                          placeholder="Contoh: Di manakah letak koordinat bayangannya?"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block font-semibold text-slate-700">Pilihan A</label>
+                          <input type="text" required value={newQuestionT1OptA} onChange={(e) => setNewQuestionT1OptA(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-1.5 focus:outline-none" />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-700">Pilihan B</label>
+                          <input type="text" required value={newQuestionT1OptB} onChange={(e) => setNewQuestionT1OptB(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-1.5 focus:outline-none" />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-700">Pilihan C</label>
+                          <input type="text" required value={newQuestionT1OptC} onChange={(e) => setNewQuestionT1OptC(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-1.5 focus:outline-none" />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-700">Pilihan D</label>
+                          <input type="text" required value={newQuestionT1OptD} onChange={(e) => setNewQuestionT1OptD(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-1.5 focus:outline-none" />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-700">Pilihan E</label>
+                          <input type="text" required value={newQuestionT1OptE} onChange={(e) => setNewQuestionT1OptE(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-1.5 focus:outline-none" />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-blue-900">Kunci Jawaban Benar (Tier 1)</label>
+                          <select
+                            value={newQuestionT1CorrectOpt}
+                            onChange={(e) => setNewQuestionT1CorrectOpt(e.target.value)}
+                            className="w-full bg-white border border-blue-200 rounded-xl px-3.5 py-1.5 font-bold focus:outline-none"
+                          >
+                            <option value="A">A</option>
+                            <option value="B">B</option>
+                            <option value="C">C</option>
+                            <option value="D">D</option>
+                            <option value="E">E</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-4 rounded-xl border border-indigo-100 bg-indigo-50/20 space-y-3">
+                      <h4 className="font-bold text-indigo-900 uppercase tracking-wide">Penyusunan Tier 2 (Pertanyaan Alasan & Pilihan Ganda)</h4>
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">Pertanyaan Alasan (Tier 2)</label>
+                        <input
+                          type="text"
+                          required
+                          value={newQuestionT2Text}
+                          onChange={(e) => setNewQuestionT2Text(e.target.value)}
+                          placeholder="Contoh: Mengapa Anda memilih jawaban di atas?"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block font-semibold text-slate-700">Alasan A</label>
+                          <input type="text" required value={newQuestionT2OptA} onChange={(e) => setNewQuestionT2OptA(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-1.5 focus:outline-none" />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-700">Alasan B</label>
+                          <input type="text" required value={newQuestionT2OptB} onChange={(e) => setNewQuestionT2OptB(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-1.5 focus:outline-none" />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-700">Alasan C</label>
+                          <input type="text" required value={newQuestionT2OptC} onChange={(e) => setNewQuestionT2OptC(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-1.5 focus:outline-none" />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-700">Alasan D</label>
+                          <input type="text" required value={newQuestionT2OptD} onChange={(e) => setNewQuestionT2OptD(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-1.5 focus:outline-none" />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-slate-700">Alasan E</label>
+                          <input type="text" required value={newQuestionT2OptE} onChange={(e) => setNewQuestionT2OptE(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-1.5 focus:outline-none" />
+                        </div>
+                        <div>
+                          <label className="block font-semibold text-indigo-900">Kunci Jawaban Benar (Tier 2)</label>
+                          <select
+                            value={newQuestionT2CorrectOpt}
+                            onChange={(e) => setNewQuestionT2CorrectOpt(e.target.value)}
+                            className="w-full bg-white border border-indigo-200 rounded-xl px-3.5 py-1.5 font-bold focus:outline-none"
+                          >
+                            <option value="A">A</option>
+                            <option value="B">B</option>
+                            <option value="C">C</option>
+                            <option value="D">D</option>
+                            <option value="E">E</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end space-x-3 pt-4 border-t border-slate-150">
+                      <button
+                        type="button"
+                        onClick={() => setShowAddQuestionModal(false)}
+                        className="bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold px-4 py-2 rounded-xl transition"
+                      >
+                        Batal
+                      </button>
+                      <button
+                        type="submit"
+                        className="bg-slate-900 hover:bg-slate-800 text-white font-bold px-5 py-2 rounded-xl transition shadow-md shadow-slate-900/10"
+                      >
+                        Simpan ke Bank Soal
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {/* MODAL GURU: DAFTARKAN SISWA (MANUAL & BULK IMPORT) */}
+            {showAddStudentModal && (
+              <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-scale-up relative overflow-hidden">
+                  <div className="flex justify-between items-center border-b border-slate-100 pb-3 mb-4">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-950">Daftarkan Siswa Baru</h3>
+                      <p className="text-[10px] text-slate-500 font-medium">Tambah siswa yang berhak mengikuti asesmen geometri.</p>
+                    </div>
+                    <button
+                      onClick={() => setShowAddStudentModal(false)}
+                      className="text-slate-400 hover:text-slate-600 font-bold"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  {/* Switch Tab Manual / Massal */}
+                  <div className="flex border border-slate-100 p-1 rounded-xl bg-slate-50 mb-4">
+                    <button
+                      type="button"
+                      onClick={() => setIsBulkMode(false)}
+                      className={`flex-1 text-center py-1.5 rounded-lg text-xs font-bold transition ${!isBulkMode ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}
+                    >
+                      Daftar Manual
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsBulkMode(true)}
+                      className={`flex-1 text-center py-1.5 rounded-lg text-xs font-bold transition ${isBulkMode ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}
+                    >
+                      Bulk Import Teks
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleRegisterStudents} className="space-y-4">
+                    {!isBulkMode ? (
+                      /* MANUAL ADD */
+                      <div className="space-y-3.5">
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-1">Nama Lengkap Siswa</label>
+                          <input
+                            type="text"
+                            required={!isBulkMode}
+                            value={newStudentName}
+                            onChange={(e) => setNewStudentName(e.target.value)}
+                            placeholder="Contoh: Ahmad Dhani"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-medium focus:outline-none"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-1">NISN / Username Unik</label>
+                          <input
+                            type="text"
+                            required={!isBulkMode}
+                            value={newStudentUsername}
+                            onChange={(e) => setNewStudentUsername(e.target.value.replace(/\s+/g, ''))}
+                            placeholder="Contoh: 00812345"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold focus:outline-none"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-1">Pilih Kelas</label>
+                          <select
+                            value={newStudentClass}
+                            onChange={(e) => setNewStudentClass(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-bold focus:outline-none"
+                          >
+                            <option value="XI-1">XI-1</option>
+                            <option value="XI-2">XI-2</option>
+                            <option value="XI-3">XI-3</option>
+                            <option value="XI-4">XI-4</option>
+                            <option value="XI-5">XI-5</option>
+                          </select>
+                        </div>
+                      </div>
+                    ) : (
+                      /* BULK IMPORT */
+                      <div className="space-y-3">
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-1">Masukkan Data Siswa (Format: NISN, Nama Siswa, Kelas)</label>
+                        <p className="text-[10px] text-slate-400">Pisahkan dengan koma per baris. Contoh:</p>
+                        <pre className="p-2 bg-slate-50 border border-slate-200 rounded-lg text-[9px] font-mono text-slate-600 select-none">
+                          00100201, Ahmad Dhani, XI-1{"\n"}
+                          00100202, Budi Doremi, XI-2{"\n"}
+                          00100203, Cinta Laura, XI-1
+                        </pre>
+                        <textarea
+                          rows="5"
+                          required={isBulkMode}
+                          value={bulkImportText}
+                          onChange={(e) => setBulkImportText(e.target.value)}
+                          placeholder="Salin/Ketik daftar siswa di sini sesuai format di atas"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs font-mono focus:outline-none"
+                        />
+                      </div>
+                    )}
+
+                    <div className="flex justify-end space-x-2.5 pt-3 border-t border-slate-100">
+                      <button
+                        type="button"
+                        onClick={() => setShowAddStudentModal(false)}
+                        className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-semibold"
+                      >
+                        Batal
+                      </button>
+                      <button
+                        type="submit"
+                        className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-sm"
+                      >
+                        Simpan Siswa
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+
+          </div>
+        )}
+      </main>
+
+      {/* Exit confirmation dialogue modal */}
+      {showExitWarning && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 text-center">
+            <h3 className="text-sm font-bold text-slate-900 mb-2">Konfirmasi Keluar Sesi</h3>
+            <p className="text-slate-500 text-xs mb-6">Apakah Anda yakin ingin keluar dari pengerjaan saat ini? Seluruh jawaban Anda telah tersinkronisasi di server.</p>
+            <div className="flex space-x-3 justify-center">
+              <button
+                onClick={() => setShowExitWarning(false)}
+                className="px-4.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-semibold"
+              >
+                Batal
+              </button>
+              <button
+                onClick={confirmExit}
+                className="px-4.5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-semibold"
+              >
+                Ya, Keluar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reset Confirmation Dialogue Modal */}
+      {showResetWarning && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 text-center">
+            <h3 className="text-sm font-bold text-slate-900 mb-2">Hapus Semua Data Sesi</h3>
+            <p className="text-slate-500 text-xs mb-6">Tindakan ini akan menghapus permanen seluruh riwayat pengerjaan murid dari basis data cloud. Tindakan ini tidak dapat dibatalkan.</p>
+            <div className="flex space-x-3 justify-center">
+              <button
+                onClick={() => setShowResetWarning(false)}
+                className="px-4.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-semibold"
+              >
+                Batal
+              </button>
+              <button
+                onClick={confirmResetAllSessions}
+                className="px-4.5 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-semibold"
+              >
+                Ya, Hapus Semua
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- FOOTER CREDIT --- */}
+      <footer className="bg-white border-t border-slate-200 py-6 text-center text-xs text-slate-400">
+        <div className="max-w-7xl mx-auto px-4">
+          <p>© 2026 GeoDiagnostik XI. Sistem Web Asesmen Diagnostik Transformasi Geometri (Kelas XI) v1.0.</p>
+          <p className="mt-1 text-[11px] text-slate-400/80">Premium Three-Tier Multiple Choice Model • Desain Responsif & Minimalis</p>
+        </div>
+      </footer>
+
+    </div>
+  );
+}
